@@ -232,7 +232,20 @@ function riskFor(zip, dow, tod, month) {
 function isCovered(zip){ return COVERED_ZIPS.has(String(zip)); }
 function llmEnabled(){ return WORKER_URL && WORKER_URL !== "PASTE_HERE"; }
 
-const state = { zip:'85004', dow:0, tod:0, month:1 };
+const state = { zip:'85004', dow:0, tod:0, month:1, outOfCoverageArea: null };
+
+// Cities/areas not in Phoenix PD's data — used to detect out-of-coverage queries.
+const NON_PHX_AREAS = [
+  'scottsdale','tempe','mesa','chandler','gilbert','glendale','peoria','avondale',
+  'goodyear','surprise','queen creek','apache junction','fountain hills','paradise valley',
+  'buckeye','maricopa','sun city','el mirage','tolleson','litchfield park','cave creek',
+  'carefree','wickenburg','asu','arizona state','tucson','flagstaff','sedona'
+];
+function detectOutOfCoverageArea(qRaw){
+  const q = (qRaw || '').toLowerCase();
+  const hit = NON_PHX_AREAS.find(a => new RegExp(`\\b${a}\\b`).test(q));
+  return hit ? hit.replace(/\b\w/g, c => c.toUpperCase()) : null;
+}
 
 const DOW_FULL = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
 const TOD_FULL = ['Morning (8 AM – noon)','Afternoon (noon – 4 PM)','Evening (4 – 8 PM)',
@@ -262,6 +275,7 @@ function setNow() {
   state.dow = dow;
   state.tod = hourToTOD(d.getHours());
   state.month = d.getMonth() + 1;
+  state.outOfCoverageArea = null;
   syncSelectsFromState();
   rerender();
 }
@@ -271,10 +285,10 @@ function syncSelectsFromState() {
   document.getElementById('todSel').value = String(state.tod);
   document.getElementById('monSel').value = String(state.month);
 }
-zipSel.addEventListener('change', e => { state.zip = e.target.value; rerender(); });
-document.getElementById('dowSel').addEventListener('change', e => { state.dow = +e.target.value; rerender(); });
-document.getElementById('todSel').addEventListener('change', e => { state.tod = +e.target.value; rerender(); });
-document.getElementById('monSel').addEventListener('change', e => { state.month = +e.target.value; rerender(); });
+zipSel.addEventListener('change', e => { state.zip = e.target.value; state.outOfCoverageArea = null; rerender(); });
+document.getElementById('dowSel').addEventListener('change', e => { state.dow = +e.target.value; state.outOfCoverageArea = null; rerender(); });
+document.getElementById('todSel').addEventListener('change', e => { state.tod = +e.target.value; state.outOfCoverageArea = null; rerender(); });
+document.getElementById('monSel').addEventListener('change', e => { state.month = +e.target.value; state.outOfCoverageArea = null; rerender(); });
 document.getElementById('btnNow').addEventListener('click', setNow);
 
 // ---------- MAP ----------
@@ -310,7 +324,7 @@ function buildLayer(){
       }, {sticky:true});
       lyr.on('click', () => {
         if (!isCovered(zip)) return;
-        state.zip = zip; syncSelectsFromState(); rerender();
+        state.zip = zip; state.outOfCoverageArea = null; syncSelectsFromState(); rerender();
       });
     }
   }).addTo(map);
@@ -321,9 +335,27 @@ function rerender(){
   if (geoLayer) {
     geoLayer.eachLayer(lyr => {
       const zip = String(lyr.feature.properties.ZIP);
-      lyr.setStyle(styleFor(zip, zip === state.zip));
+      // When out-of-coverage area was queried, don't highlight any ZIP as "selected"
+      const isSel = !state.outOfCoverageArea && zip === state.zip;
+      lyr.setStyle(styleFor(zip, isSel));
     });
   }
+
+  // Out-of-coverage state: result panel shows an explicit refusal instead of a stale prediction.
+  if (state.outOfCoverageArea) {
+    document.getElementById('ctxText').textContent =
+      `Asked: ${state.outOfCoverageArea} · ${DOW_FULL[state.dow]} · ${TOD_SHORT[state.tod]} · ${MON_FULL[state.month-1]}`;
+    document.getElementById('resValue').textContent = 'OUTSIDE COVERAGE';
+    document.getElementById('resValue').style.color = '#888';
+    document.getElementById('resScore').textContent = '—';
+    document.getElementById('riskDot').textContent = '!';
+    document.getElementById('riskDot').style.background = '#555';
+    document.getElementById('resSubtitle').textContent =
+      `${state.outOfCoverageArea} isn't in Phoenix PD's data — try a Phoenix-proper ZIP.`;
+    if (selectedMarker) { map.removeLayer(selectedMarker); selectedMarker = null; }
+    return;
+  }
+
   const r = riskFor(state.zip, state.dow, state.tod, state.month);
   document.getElementById('ctxText').textContent =
     `ZIP ${state.zip} · ${DOW_FULL[state.dow]} · ${TOD_SHORT[state.tod]} · ${MON_FULL[state.month-1]}`;
@@ -484,6 +516,17 @@ async function handleQuery(rawQ) {
     merged.zip = null;
   }
 
+  // Detect out-of-coverage when ZIP couldn't be resolved.
+  // Either (a) user mentioned a non-Phoenix area name (Scottsdale, Tempe, etc.)
+  // OR (b) user typed a non-covered ZIP code (rules parser caught it as nonCoveredZip).
+  // In either case put the result panel into a refusal state instead of stale prediction.
+  const areaName = detectOutOfCoverageArea(query);
+  if (merged.zip === null && (areaName || merged.nonCoveredZip)) {
+    state.outOfCoverageArea = areaName || `ZIP ${merged.nonCoveredZip}`;
+  } else {
+    state.outOfCoverageArea = null;
+  }
+
   // Apply
   applyParse(merged);
 }
@@ -502,6 +545,7 @@ function applyParse(parse){
       r.textContent = parse.reasoning;
       fb.appendChild(r);
     }
+    rerender();  // re-render so the result panel shows OUTSIDE COVERAGE state
     return;
   }
 

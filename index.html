@@ -542,6 +542,14 @@ function applyParse(parse){
     w.textContent = `Using current value for: ${unknown.join(', ')}`;
     fb.appendChild(w);
   }
+
+  // Show the LLM's reasoning whenever it provided one AND something was unusual
+  // (a field couldn't be filled, an activity was extracted, or it's an off-topic refusal).
+  if (parse.sourceLLM && parse.reasoning && (unknown.length > 0 || parse.activity)) {
+    const r = document.createElement('span'); r.className='chip ai';
+    r.textContent = parse.reasoning;
+    fb.appendChild(r);
+  }
 }
 
 document.getElementById('askBtn').addEventListener('click', () => {

@@ -77,6 +77,8 @@
   .breakdown-row{font-size:12px;color:var(--muted);padding-left:16px;line-height:1.4;display:none}
   .breakdown-row.show{display:block}
   .breakdown-row b{color:var(--sub);font-weight:600}
+  .empty-note{font-size:11.5px;color:var(--muted);font-style:italic;line-height:1.45;padding:6px 10px;border-left:2px solid var(--line);background:#1a1a1a;border-radius:4px;display:none}
+  .empty-note.show{display:block}
   .legend{display:flex;gap:10px;font-size:11px;color:var(--sub);align-items:center;flex-wrap:wrap}
   .legend .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:middle}
   .legend .sw.dash{background:transparent;border:2px dashed #888}
@@ -174,6 +176,7 @@
           <span id="confText">—</span>
         </div>
         <div id="breakdown" class="breakdown-row"></div>
+        <div id="emptyNote" class="empty-note"></div>
         <div class="legend">
           <span><span class="sw" style="background:var(--low)"></span>Low</span>
           <span><span class="sw" style="background:var(--med)"></span>Moderate</span>
@@ -266,10 +269,14 @@ function countBreakdownFor(zip, dow, tod, month) {
   const other    = Math.max(0, total - violent - property);
   return { total, violent, property, other };
 }
-function confidenceFor(count){
-  if (count >= 100) return { tier:'high', label:'high confidence' };
-  if (count >=  30) return { tier:'med',  label:'moderate confidence' };
-  if (count >=  10) return { tier:'low',  label:'low confidence' };
+// Confidence thresholds vary by category — violent crime is rarer, so the bar is lower.
+function confidenceFor(count, category){
+  const thr = (category === 'violent')  ? { high:20, mod:5,  low:2 }
+            : (category === 'property') ? { high:80, mod:25, low:8 }
+            :                              { high:100, mod:30, low:10 };  // all
+  if (count >= thr.high) return { tier:'high', label:'high confidence' };
+  if (count >= thr.mod ) return { tier:'med',  label:'moderate confidence' };
+  if (count >= thr.low ) return { tier:'low',  label:'low confidence' };
   return { tier:'lim', label:'limited data' };
 }
 function isCovered(zip){ return COVERED_ZIPS.has(String(zip)); }
@@ -424,7 +431,7 @@ function rerender(){
       `${state.outOfCoverageArea} isn't in Phoenix PD's data — try a Phoenix-proper ZIP.`;
     document.getElementById('confDot').className = 'conf-dot lim';
     document.getElementById('confText').textContent = '—';
-    breakdownEl.classList.remove('show'); breakdownEl.innerHTML = '';
+    breakdownEl.classList.remove('show'); breakdownEl.innerHTML = ''; document.getElementById('emptyNote').classList.remove('show');
     if (selectedMarker) { map.removeLayer(selectedMarker); selectedMarker = null; }
     renderAdvice(); return;
   }
@@ -446,15 +453,35 @@ function rerender(){
       `${catLabel} risk for ZIP ${state.zip} on ${DOW_FULL[state.dow]} · ${TOD_FULL[state.tod]} · ${MON_FULL[state.month-1]}${probTxt}`;
     const bk = countBreakdownFor(state.zip, state.dow, state.tod, state.month);
     if (bk) {
-      const conf = confidenceFor(bk.total);
+      // Category-specific count: matches what the user is asking about
+      const catCount = (state.category === 'violent')  ? bk.violent
+                     : (state.category === 'property') ? bk.property
+                     :                                   bk.total;
+      const catNoun  = (state.category === 'violent')  ? 'violent incident'
+                     : (state.category === 'property') ? 'property incident'
+                     :                                   'incident';
+      const conf = confidenceFor(catCount, state.category);
       document.getElementById('confDot').className = 'conf-dot ' + conf.tier;
       document.getElementById('confText').textContent =
-        `Based on ${bk.total} incident${bk.total === 1 ? '' : 's'} in this slot in the past ~5 years (since 2021) · ${conf.label}`;
+        `Based on ${catCount} ${catNoun}${catCount === 1 ? '' : 's'} in this slot in the past ~5 years (since 2021) · ${conf.label}`;
       if (bk.total > 0) {
         breakdownEl.classList.add('show');
         breakdownEl.innerHTML = `<b>${bk.property}</b> property &middot; <b>${bk.violent}</b> violent &middot; <b>${bk.other}</b> other`;
       } else {
-        breakdownEl.classList.remove('show'); breakdownEl.innerHTML = '';
+        breakdownEl.classList.remove('show'); breakdownEl.innerHTML = ''; document.getElementById('emptyNote').classList.remove('show');
+      }
+
+      // Empty-slot explanation: only when the SELECTED category's count is 0
+      const noteEl = document.getElementById('emptyNote');
+      if (catCount === 0) {
+        const catWord = (state.category === 'violent') ? 'violent' :
+                        (state.category === 'property') ? 'property' : '';
+        noteEl.textContent =
+          `No ${catWord ? catWord + ' ' : ''}incidents recorded in this exact slot since 2021. ` +
+          `Model inferred this prediction from broader area-level patterns and recent ZIP-wide activity.`;
+        noteEl.classList.add('show');
+      } else {
+        noteEl.classList.remove('show'); noteEl.textContent = '';
       }
     }
   } else {
@@ -464,7 +491,7 @@ function rerender(){
     document.getElementById('resSubtitle').textContent = '—';
     document.getElementById('confDot').className = 'conf-dot lim';
     document.getElementById('confText').textContent = '—';
-    breakdownEl.classList.remove('show'); breakdownEl.innerHTML = '';
+    breakdownEl.classList.remove('show'); breakdownEl.innerHTML = ''; document.getElementById('emptyNote').classList.remove('show');
   }
 
   if (selectedMarker) { map.removeLayer(selectedMarker); selectedMarker = null; }
